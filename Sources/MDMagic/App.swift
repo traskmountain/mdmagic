@@ -120,14 +120,16 @@ final class TabStore: ObservableObject {
         viewBgColor   = loadColorPref("viewBgColor")
     }
 
-    // MARK: - Color prefs helpers
+    // MARK: - Color prefs helpers (stored as "#rrggbb" hex strings)
 
     private func saveColorPref(_ key: String, _ color: Color?) {
         if let color {
-            let ns = NSColor(color)
-            if let data = try? NSKeyedArchiver.archivedData(withRootObject: ns, requiringSecureCoding: false) {
-                UserDefaults.standard.set(data, forKey: key)
-            }
+            let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
+            let hex = String(format: "#%02x%02x%02x",
+                             Int(min(max(ns.redComponent,   0), 1) * 255),
+                             Int(min(max(ns.greenComponent, 0), 1) * 255),
+                             Int(min(max(ns.blueComponent,  0), 1) * 255))
+            UserDefaults.standard.set(hex, forKey: key)
         } else {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -135,10 +137,14 @@ final class TabStore: ObservableObject {
     }
 
     private func loadColorPref(_ key: String) -> Color? {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let ns = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data)
-        else { return nil }
-        return Color(ns)
+        guard let hex = UserDefaults.standard.string(forKey: key),
+              hex.hasPrefix("#"), hex.count == 7,
+              let val = UInt64(hex.dropFirst(), radix: 16) else { return nil }
+        return Color(.sRGB,
+                     red:   Double((val >> 16) & 0xFF) / 255,
+                     green: Double((val >>  8) & 0xFF) / 255,
+                     blue:  Double( val        & 0xFF) / 255,
+                     opacity: 1)
     }
 
     /// Opens (or re-focuses) the dashboard tab.
@@ -678,16 +684,18 @@ struct ViewColorControls: View {
     private var hasOverrides: Bool { store.viewFontColor != nil || store.viewBgColor != nil }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
+            Text("Text").font(.system(size: 11)).foregroundStyle(.secondary)
             ColorPicker("", selection: fontColorBinding, supportsOpacity: false)
                 .labelsHidden()
                 .frame(width: 28, height: 22)
-                .help("Text color override")
+                .help("Text color")
 
+            Text("BG").font(.system(size: 11)).foregroundStyle(.secondary)
             ColorPicker("", selection: bgColorBinding, supportsOpacity: false)
                 .labelsHidden()
                 .frame(width: 28, height: 22)
-                .help("Background color override")
+                .help("Background color")
 
             if hasOverrides {
                 Button(action: {
@@ -697,7 +705,7 @@ struct ViewColorControls: View {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 11))
                 }
-                .help("Reset text and background colors to theme default")
+                .help("Reset colors to theme default")
             }
         }
     }
