@@ -139,6 +139,67 @@ enum EditorTemplate {
             }
         });
         ed.focus();
+
+        // Serialize the editor's rich content back to Markdown. Exposed for the
+        // native app to call via evaluateJavaScript when saving as .md.
+        function toMarkdown() {
+            function inline(node) {
+                let out = "";
+                node.childNodes.forEach(function (n) {
+                    if (n.nodeType === 3) { out += n.textContent; return; }
+                    if (n.nodeType !== 1) return;
+                    const tag = n.tagName.toLowerCase();
+                    const inner = inline(n);
+                    switch (tag) {
+                        case "b": case "strong": out += "**" + inner + "**"; break;
+                        case "i": case "em": out += "*" + inner + "*"; break;
+                        case "u": out += inner; break; // no MD underline
+                        case "s": case "strike": case "del": out += "~~" + inner + "~~"; break;
+                        case "code": out += "`" + inner + "`"; break;
+                        case "a": out += "[" + inner + "](" + (n.getAttribute("href")||"") + ")"; break;
+                        case "br": out += "  \\n"; break;
+                        default: out += inner;
+                    }
+                });
+                return out;
+            }
+            function listItems(list, ordered, depth) {
+                let out = ""; let i = 1;
+                list.childNodes.forEach(function (li) {
+                    if (li.nodeType !== 1 || li.tagName.toLowerCase() !== "li") return;
+                    const pad = "  ".repeat(depth);
+                    const marker = ordered ? (i++ + ". ") : "- ";
+                    // separate nested lists from inline content
+                    let sub = "";
+                    const clone = li.cloneNode(true);
+                    clone.querySelectorAll("ul,ol").forEach(function (n) {
+                        sub += listItems(n, n.tagName.toLowerCase() === "ol", depth + 1);
+                        n.remove();
+                    });
+                    out += pad + marker + inline(clone).trim() + "\\n" + sub;
+                });
+                return out;
+            }
+            let md = "";
+            ed.childNodes.forEach(function (n) {
+                if (n.nodeType === 3) { const t = n.textContent.trim(); if (t) md += t + "\\n\\n"; return; }
+                if (n.nodeType !== 1) return;
+                const tag = n.tagName.toLowerCase();
+                switch (tag) {
+                    case "h1": md += "# " + inline(n).trim() + "\\n\\n"; break;
+                    case "h2": md += "## " + inline(n).trim() + "\\n\\n"; break;
+                    case "h3": md += "### " + inline(n).trim() + "\\n\\n"; break;
+                    case "h4": md += "#### " + inline(n).trim() + "\\n\\n"; break;
+                    case "blockquote": md += "> " + inline(n).trim().replace(/\\n/g, "\\n> ") + "\\n\\n"; break;
+                    case "pre": md += "```\\n" + n.textContent.replace(/\\n$/, "") + "\\n```\\n\\n"; break;
+                    case "ul": md += listItems(n, false, 0) + "\\n"; break;
+                    case "ol": md += listItems(n, true, 0) + "\\n"; break;
+                    case "hr": md += "---\\n\\n"; break;
+                    default: { const t = inline(n).trim(); if (t) md += t + "\\n\\n"; }
+                }
+            });
+            return md.replace(/\\n{3,}/g, "\\n\\n").trim() + "\\n";
+        }
         </script>
         </body>
         </html>

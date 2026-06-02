@@ -24,10 +24,12 @@ struct MDMagicApp: App {
                     .keyboardShortcut("o", modifiers: .command)
             }
             CommandGroup(replacing: .saveItem) {
-                Button("Save As…") { store.active?.saveAs() }
+                Button("Save As Markdown…") { store.active?.saveAs() }
                     .keyboardShortcut("s", modifiers: .command)
             }
             CommandGroup(replacing: .importExport) {
+                Button("Export as HTML…") { store.active?.exportHTML() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
                 Button("Export as PDF…") { store.active?.exportPDF() }
                     .keyboardShortcut("e", modifiers: .command)
             }
@@ -85,19 +87,35 @@ final class TabStore: ObservableObject {
     @Published var appearance: Appearance = .system {
         didSet { tabs.forEach { $0.applyAppearance(appearance) } }
     }
+    let recents = Recents()
 
     var active: TabModel? { tabs.first { $0.id == activeID } }
 
     init() {
-        let welcome = TabModel(kind: .markdown)
-        welcome.loadMarkdown(text: TabModel.welcome, title: "Welcome")
-        tabs = [welcome]
-        activeID = welcome.id
+        recents.refresh()
+        let dash = TabModel(kind: .dashboard)
+        dash.title = "Dashboard"
+        tabs = [dash]
+        activeID = dash.id
+    }
+
+    /// Opens (or re-focuses) the dashboard tab.
+    func showDashboard() {
+        if let existing = tabs.first(where: { $0.kind == .dashboard }) {
+            activeID = existing.id
+        } else {
+            let dash = TabModel(kind: .dashboard)
+            dash.title = "Dashboard"
+            tabs.insert(dash, at: 0)
+            activeID = dash.id
+        }
+        recents.refresh()
     }
 
     func newEditorTab() {
         let tab = TabModel(kind: .editor)
         tab.title = "Untitled"
+        tab.onSavedToDisk = { [weak self] savedURL in self?.recents.record(url: savedURL) }
         tabs.append(tab)
         activeID = tab.id
     }
@@ -116,8 +134,10 @@ final class TabStore: ObservableObject {
     func openFile(url: URL) {
         let tab = TabModel(kind: .markdown)
         tab.loadFile(url: url)
+        tab.onSavedToDisk = { [weak self] savedURL in self?.recents.record(url: savedURL) }
         tabs.append(tab)
         activeID = tab.id
+        recents.record(url: url)
     }
 
     func close(_ tab: TabModel) {
@@ -127,16 +147,16 @@ final class TabStore: ObservableObject {
             activeID = tabs.indices.contains(idx) ? tabs[idx].id : tabs.last?.id
         }
         if tabs.isEmpty {
-            let welcome = TabModel(kind: .markdown)
-            welcome.loadMarkdown(text: TabModel.welcome, title: "Welcome")
-            tabs = [welcome]; activeID = welcome.id
+            let dash = TabModel(kind: .dashboard)
+            dash.title = "Dashboard"
+            tabs = [dash]; activeID = dash.id
         }
     }
 }
 
 // MARK: - Tab model
 
-enum TabKind { case markdown, editor }
+enum TabKind { case markdown, editor, dashboard }
 
 @MainActor
 final class TabModel: ObservableObject, Identifiable {
@@ -144,17 +164,25 @@ final class TabModel: ObservableObject, Identifiable {
     let kind: TabKind
     @Published var title: String = "Untitled"
     @Published var html: String          // HTML loaded into the web view
+    private var markdownSource: String = "" // raw Markdown (viewer tabs)
     private var currentURL: URL?
     weak var webView: WKWebView?
+    /// Called with the destination URL whenever this tab writes a file to disk,
+    /// so the store can record it in recents.
+    var onSavedToDisk: ((URL) -> Void)?
 
     init(kind: TabKind) {
         self.kind = kind
-        self.html = kind == .editor ? EditorTemplate.html
-                                     : MarkdownRenderer.html(from: "")
+        switch kind {
+        case .editor:    self.html = EditorTemplate.html
+        case .markdown:  self.html = MarkdownRenderer.html(from: "")
+        case .dashboard: self.html = ""   // native SwiftUI view, no web content
+        }
     }
 
     func loadMarkdown(text: String, title: String) {
         self.title = title
+        self.markdownSource = text
         self.html = MarkdownRenderer.html(from: text)
     }
 
@@ -165,6 +193,7 @@ final class TabModel: ObservableObject, Identifiable {
         }
         currentURL = url
         title = url.lastPathComponent
+        markdownSource = text
         html = MarkdownRenderer.html(from: text)
     }
 
@@ -204,7 +233,72 @@ final class TabModel: ObservableObject, Identifiable {
         webView?.pageZoom = zoom
     }
 
-    // MARK: PDF export (works for both viewer and editor tabs)
+    // MARK: Save (Markdown)
+
+    /// Save the current tab as a Markdown (.md) file — the default save format.
+    /// Editor tabs serialize their rich content back to Markdown; viewer tabs use
+    /// their original Markdown source.
+    func saveAs() {
+        switch kind {
+        case .dashboard:
+            return
+        case .editor:
+            guard let webView else { return }
+            webView.evaluateJavaScript("toMarkdown()") { [weak self] result, _ in
+                self?.writeMarkdown((result as? String) ?? "")
+            }
+        case .markdown:
+            writeMarkdown(markdownSource)
+        }
+    }
+
+    private func writeMarkdown(_ text: String) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        let base = (title as NSString).deletingPathExtension
+        panel.nameFieldStringValue = (base.isEmpty ? "Untitled" : base) + ".md"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        guard panel.runModal() == .OK, var dest = panel.url else { return }
+        if dest.pathExtension.lowercased() != "md" { dest.appendPathExtension("md") }
+        do {
+            try text.write(to: dest, atomically: true, encoding: .utf8)
+            title = dest.lastPathComponent
+            currentURL = dest
+            markdownSource = text
+            onSavedToDisk?(dest)
+        } catch { presentError("Could not save: \(error.localizedDescription)") }
+    }
+
+    // MARK: Export (HTML)
+
+    func exportHTML() {
+        if kind == .editor {
+            guard let webView else { return }
+            webView.evaluateJavaScript("document.getElementById('editor').innerHTML") { [weak self] result, _ in
+                guard let self else { return }
+                let base = (self.title as NSString).deletingPathExtension
+                self.writeHTML(Self.standaloneEditorHTML(body: (result as? String) ?? "", title: base))
+            }
+        } else {
+            writeHTML(html)
+        }
+    }
+
+    private func writeHTML(_ document: String) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        let base = (title as NSString).deletingPathExtension
+        panel.nameFieldStringValue = (base.isEmpty ? "Document" : base) + ".html"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        guard panel.runModal() == .OK, var dest = panel.url else { return }
+        if dest.pathExtension.lowercased() != "html" { dest.appendPathExtension("html") }
+        do { try document.write(to: dest, atomically: true, encoding: .utf8) }
+        catch { presentError("Could not export: \(error.localizedDescription)") }
+    }
+
+    // MARK: Export (PDF) — works for both viewer and editor tabs
 
     func exportPDF() {
         guard let webView else { return }
@@ -233,53 +327,6 @@ final class TabModel: ObservableObject, Identifiable {
                     self?.presentError("PDF export failed: \(error.localizedDescription)")
                 }
             }
-        }
-    }
-
-    // MARK: Save As
-
-    /// Saves the current tab. Editor tabs save their live rich-text content as a
-    /// standalone HTML document; viewer tabs save the rendered HTML.
-    func saveAs() {
-        if kind == .editor {
-            guard let webView else { return }
-            // Pull the live edited content out of the contenteditable region.
-            webView.evaluateJavaScript("document.getElementById('editor').innerHTML") { [weak self] result, _ in
-                let inner = (result as? String) ?? ""
-                self?.writeDocument(innerHTML: inner)
-            }
-        } else {
-            writeDocument(innerHTML: nil) // viewer: save full rendered html
-        }
-    }
-
-    private func writeDocument(innerHTML: String?) {
-        let panel = NSSavePanel()
-        let htmlType = UTType.html
-        panel.allowedContentTypes = [htmlType]
-        let base = (title as NSString).deletingPathExtension
-        panel.nameFieldStringValue = (base.isEmpty ? "Untitled" : base) + ".html"
-        panel.canCreateDirectories = true
-        panel.isExtensionHidden = false
-        guard panel.runModal() == .OK, var dest = panel.url else { return }
-        if dest.pathExtension.lowercased() != "html" {
-            dest.appendPathExtension("html")
-        }
-
-        let document: String
-        if let inner = innerHTML {
-            // Wrap the editor body in a clean standalone, self-styled HTML file.
-            document = Self.standaloneEditorHTML(body: inner, title: base)
-        } else {
-            document = html
-        }
-
-        do {
-            try document.write(to: dest, atomically: true, encoding: .utf8)
-            title = dest.lastPathComponent
-            currentURL = dest
-        } catch {
-            presentError("Could not save: \(error.localizedDescription)")
         }
     }
 
@@ -322,9 +369,10 @@ final class TabModel: ObservableObject, Identifiable {
 
     ## Features
 
+    - Dashboard of your **recent documents** with created / modified dates
     - GitHub-flavored Markdown viewer
     - WYSIWYG rich-text editor (New tab)
-    - Export any tab to **PDF** (⌘E)
+    - **Save** as Markdown (⌘S); **Export** as HTML or PDF
     - Light / **dark** mode (⇧⌘D)
 
     ```swift
@@ -374,6 +422,11 @@ struct TopNavBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            Button(action: { store.showDashboard() }) {
+                Label("Dashboard", systemImage: "square.grid.2x2")
+            }
+            .help("Show recent documents dashboard")
+
             Button(action: { store.newEditorTab() }) {
                 Label("New", systemImage: "plus")
             }
@@ -385,14 +438,19 @@ struct TopNavBar: View {
             .help("Open a Markdown file (⌘O)")
 
             Button(action: { store.active?.saveAs() }) {
-                Label("Save As", systemImage: "square.and.arrow.down")
+                Label("Save", systemImage: "square.and.arrow.down")
             }
-            .help("Save current tab as a file (⌘S)")
+            .help("Save current tab as Markdown (⌘S)")
 
-            Button(action: { store.active?.exportPDF() }) {
-                Label("Export PDF", systemImage: "arrow.down.doc")
+            Menu {
+                Button("Export as HTML…") { store.active?.exportHTML() }
+                Button("Export as PDF…")  { store.active?.exportPDF() }
+            } label: {
+                Label("Export", systemImage: "arrow.down.doc")
             }
-            .help("Export current tab to PDF (⌘E)")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Export current tab as HTML or PDF")
 
             Divider().frame(height: 18)
 
@@ -429,9 +487,17 @@ struct TabChip: View {
     let onSelect: () -> Void
     let onClose: () -> Void
 
+    private var tabIcon: String {
+        switch tab.kind {
+        case .editor:    return "pencil"
+        case .markdown:  return "doc.text"
+        case .dashboard: return "square.grid.2x2"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: tab.kind == .editor ? "pencil" : "doc.text")
+            Image(systemName: tabIcon)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             Text(tab.title)
@@ -467,15 +533,130 @@ struct TabContentView: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        WebView(html: tab.html,
-                editable: tab.kind == .editor,
-                onFileDrop: { url in
-                    // Dropping a file onto a viewer tab loads it in place.
-                    if tab.kind == .markdown { tab.loadFile(url: url) }
-                },
-                onCreate: { view in tab.webView = view },
-                onLoad: { tab.applyAppearance(store.appearance) })
-            .ignoresSafeArea()
+        if tab.kind == .dashboard {
+            DashboardView(store: store)
+        } else {
+            WebView(html: tab.html,
+                    editable: tab.kind == .editor,
+                    onFileDrop: { url in
+                        // Dropping a file onto a viewer tab loads it in place.
+                        if tab.kind == .markdown { tab.loadFile(url: url) }
+                    },
+                    onCreate: { view in tab.webView = view },
+                    onLoad: { tab.applyAppearance(store.appearance) })
+                .ignoresSafeArea()
+        }
+    }
+}
+
+// MARK: - Dashboard
+
+struct DashboardView: View {
+    @ObservedObject var store: TabStore
+    @ObservedObject var recents: Recents
+
+    init(store: TabStore) {
+        self.store = store
+        self.recents = store.recents
+    }
+
+    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 16)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("MDMagic").font(.system(size: 28, weight: .bold))
+                        Text("Recent documents").font(.system(size: 14)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        store.newEditorTab()
+                    } label: { Label("New", systemImage: "plus") }
+                    Button {
+                        store.openPanel()
+                    } label: { Label("Open", systemImage: "folder") }
+                }
+
+                if recents.files.isEmpty {
+                    emptyState
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                        ForEach(recents.files) { file in
+                            FileTile(file: file) { store.openFile(url: file.url) }
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { recents.refresh() }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 44)).foregroundStyle(.secondary)
+            Text("No recent documents yet")
+                .font(.system(size: 16, weight: .medium))
+            Text("Open a Markdown file or create a new document — it'll show up here.")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
+    }
+}
+
+struct FileTile: View {
+    let file: RecentFile
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    private static let dateFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; return f
+    }()
+    private func fmt(_ d: Date?) -> String { d.map { Self.dateFmt.string(from: $0) } ?? "—" }
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(file.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(1).truncationMode(.middle)
+                        Text(file.url.deletingLastPathComponent().lastPathComponent)
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Divider()
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Created  \(fmt(file.created))", systemImage: "calendar.badge.plus")
+                    Label("Modified \(fmt(file.modified))", systemImage: "pencil")
+                }
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.primary.opacity(hovering ? 0.08 : 0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
