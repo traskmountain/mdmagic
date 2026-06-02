@@ -278,7 +278,7 @@ extension MarkdownRenderer {
                         n.querySelectorAll('li').forEach(function(li) {
                             var m = ord ? (li_i++ + '. ') : '- ';
                             if (out && !out.endsWith('\\n')) out += '\\n';
-                            out += m + inlineToMd(li).trim();
+                            out += m + inlineToMd(li).trim().replace(/[ \\t]*\\n[ \\t]*/g, ' ');
                         });
                         break;
                     }
@@ -302,7 +302,10 @@ extension MarkdownRenderer {
                 var cb = clone.querySelector('input[type=checkbox]');
                 var task = '';
                 if (cb) { task = cb.checked ? '[x] ' : '[ ] '; cb.remove(); }
-                out += pad + marker + task + inlineToMd(clone).trim() + nested + '\\n';
+                // Collapse newlines — the markdown renderer is line-by-line;
+                // any \n inside a list item breaks it out of the list.
+                var text = inlineToMd(clone).trim().replace(/[ \\t]*\\n[ \\t]*/g, ' ');
+                out += pad + marker + task + text + nested + '\\n';
             });
             return out.trimEnd();
         }
