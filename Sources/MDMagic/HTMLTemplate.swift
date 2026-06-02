@@ -121,8 +121,9 @@ extension MarkdownRenderer {
         #edit-toolbar .btn-save:hover { background: #0550ae; }
         #edit-toolbar .btn-cancel { color: var(--muted); }
         #article { outline: none; }
-        body.editing #article [data-editable]:hover { outline: 1px dashed var(--link); outline-offset: 3px; border-radius: 3px; cursor: text; }
-        body.editing #article [data-editable]:focus { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 3px; }
+        body.editing #article { cursor: text; }
+        body.editing #article > *:hover { outline: 1px dashed var(--link); outline-offset: 3px; border-radius: 3px; }
+        body.editing #article > *:focus { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 3px; }
         </style>
         </head>
         <body>
@@ -156,27 +157,21 @@ extension MarkdownRenderer {
         // ── Inline editing ──────────────────────────────────────────────────
         var _snapshot = null;
         function enableEditing() {
-            _snapshot = document.getElementById('article').innerHTML;
+            var art = document.getElementById('article');
+            _snapshot = art.innerHTML;
             document.getElementById('edit-toolbar').style.display = 'flex';
             document.body.classList.add('editing');
-            document.querySelectorAll('#article > *').forEach(function(el) {
-                var t = el.tagName.toLowerCase();
-                if (t !== 'hr' && t !== 'script') {
-                    el.setAttribute('contenteditable', 'true');
-                    el.setAttribute('spellcheck', 'true');
-                    el.setAttribute('data-editable', '1');
-                }
-            });
+            art.setAttribute('contenteditable', 'true');
+            art.setAttribute('spellcheck', 'true');
             document.execCommand('styleWithCSS', false, true);
+            art.focus();
         }
         function disableEditing() {
+            var art = document.getElementById('article');
             document.getElementById('edit-toolbar').style.display = 'none';
             document.body.classList.remove('editing');
-            document.querySelectorAll('[data-editable]').forEach(function(el) {
-                el.removeAttribute('contenteditable');
-                el.removeAttribute('spellcheck');
-                el.removeAttribute('data-editable');
-            });
+            art.removeAttribute('contenteditable');
+            art.removeAttribute('spellcheck');
         }
         function cancelEdit() {
             var art = document.getElementById('article');
@@ -231,6 +226,8 @@ extension MarkdownRenderer {
                     case 'br': out += '  \\n'; break;
                     case 'img': out += '![' + (n.getAttribute('alt') || '') + '](' + (n.getAttribute('src') || '') + ')'; break;
                     case 'input': break;
+                    // block elements that can appear inline in contenteditable output
+                    case 'div': case 'p': out += inner + (out.length ? '\\n' : ''); break;
                     default: out += inner;
                 }
             });
