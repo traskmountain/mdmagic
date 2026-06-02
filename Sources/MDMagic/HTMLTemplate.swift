@@ -96,11 +96,208 @@ extension MarkdownRenderer {
         .tok-kw { color: var(--kw); } .tok-str { color: var(--str); }
         .tok-num { color: var(--num); } .tok-com { color: var(--com); font-style: italic; }
         .tok-fn { color: var(--fn); }
+        /* inline editing toolbar */
+        #edit-toolbar {
+            display: none; position: sticky; top: 0; z-index: 100;
+            background: var(--bar-bg, #f6f8fa); border-bottom: 1px solid var(--border);
+            padding: 6px 10px; flex-wrap: wrap; gap: 2px; align-items: center;
+            margin: -44px -56px 32px; /* bleed to page edges */
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) { --bar-bg: #161b22; }
+        }
+        :root[data-theme="dark"] { --bar-bg: #161b22; }
+        :root[data-theme="light"] { --bar-bg: #f6f8fa; }
+        #edit-toolbar button, #edit-toolbar select {
+            font-size: 13px; color: var(--fg); background: transparent;
+            border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer;
+            min-width: 28px; height: 28px; line-height: 1;
+        }
+        #edit-toolbar button:hover { background: var(--border); }
+        #edit-toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+        #edit-toolbar .btn-save {
+            background: #0969da; color: #fff; font-weight: 600; padding: 5px 12px; border-radius: 6px;
+        }
+        #edit-toolbar .btn-save:hover { background: #0550ae; }
+        #edit-toolbar .btn-cancel { color: var(--muted); }
+        #article { outline: none; }
+        body.editing #article [data-editable]:hover { outline: 1px dashed var(--link); outline-offset: 3px; border-radius: 3px; cursor: text; }
+        body.editing #article [data-editable]:focus { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 3px; }
         </style>
         </head>
         <body>
+        <div id="edit-toolbar">
+            <select title="Block style" onchange="applyBlock(this.value); this.blur();">
+                <option value="p">Normal</option>
+                <option value="h1">H1</option>
+                <option value="h2">H2</option>
+                <option value="h3">H3</option>
+                <option value="blockquote">Quote</option>
+            </select>
+            <span class="sep"></span>
+            <button title="Bold (⌘B)" onclick="fmt('bold')"><b>B</b></button>
+            <button title="Italic (⌘I)" onclick="fmt('italic')"><i>I</i></button>
+            <button title="Inline code" onclick="wrapCode()"><code style="font-size:11px">&lt;/&gt;</code></button>
+            <span class="sep"></span>
+            <button title="Bulleted list" onclick="fmt('insertUnorderedList')">• —</button>
+            <button title="Numbered list" onclick="fmt('insertOrderedList')">1. —</button>
+            <button title="Outdent" onclick="fmt('outdent')">⇤</button>
+            <button title="Indent" onclick="fmt('indent')">⇥</button>
+            <span class="sep"></span>
+            <button title="Insert link" onclick="addLink()">🔗 Link</button>
+            <span class="sep"></span>
+            <button class="btn-save" onclick="saveEdit()">💾 Save</button>
+            <button class="btn-cancel" onclick="cancelEdit()">✕ Cancel</button>
+        </div>
+        <div id="article">
         \(body)
+        </div>
         <script>
+        // ── Inline editing ──────────────────────────────────────────────────
+        var _snapshot = null;
+        function enableEditing() {
+            _snapshot = document.getElementById('article').innerHTML;
+            document.getElementById('edit-toolbar').style.display = 'flex';
+            document.body.classList.add('editing');
+            document.querySelectorAll('#article > *').forEach(function(el) {
+                var t = el.tagName.toLowerCase();
+                if (t !== 'hr' && t !== 'script') {
+                    el.setAttribute('contenteditable', 'true');
+                    el.setAttribute('data-editable', '1');
+                }
+            });
+            document.execCommand('styleWithCSS', false, true);
+        }
+        function disableEditing() {
+            document.getElementById('edit-toolbar').style.display = 'none';
+            document.body.classList.remove('editing');
+            document.querySelectorAll('[data-editable]').forEach(function(el) {
+                el.removeAttribute('contenteditable');
+                el.removeAttribute('data-editable');
+            });
+        }
+        function cancelEdit() {
+            var art = document.getElementById('article');
+            if (_snapshot !== null) art.innerHTML = _snapshot;
+            disableEditing();
+            if (window.webkit) window.webkit.messageHandlers.mdmagic.postMessage({action:'cancel'});
+        }
+        function saveEdit() {
+            var md = articleToMarkdown();
+            disableEditing();
+            if (window.webkit) window.webkit.messageHandlers.mdmagic.postMessage({action:'save', content: md});
+        }
+        function getMarkdown() { return articleToMarkdown(); }
+        function fmt(cmd, val) { document.execCommand(cmd, false, val || null); }
+        function applyBlock(tag) { document.execCommand('formatBlock', false, tag); }
+        function wrapCode() {
+            var sel = window.getSelection();
+            if (!sel.rangeCount) return;
+            var r = sel.getRangeAt(0), code = document.createElement('code');
+            r.surroundContents(code);
+        }
+        function addLink() {
+            var url = prompt('URL:', 'https://');
+            if (url) document.execCommand('createLink', false, url);
+        }
+
+        // ── Markdown serialiser (rendered HTML → Markdown) ──────────────────
+        function articleToMarkdown() {
+            var art = document.getElementById('article');
+            var out = [];
+            art.childNodes.forEach(function(n) {
+                if (n.nodeType !== 1) return;
+                var md = nodeToMd(n);
+                if (md !== null) out.push(md);
+            });
+            return out.join('\\n\\n').trim() + '\\n';
+        }
+        function inlineToMd(node) {
+            var out = '';
+            node.childNodes.forEach(function(n) {
+                if (n.nodeType === 3) { out += n.textContent; return; }
+                if (n.nodeType !== 1) return;
+                var tag = n.tagName.toLowerCase();
+                var inner = inlineToMd(n);
+                if (tag === 'span') { out += n.textContent; return; } // strip highlight spans
+                switch (tag) {
+                    case 'strong': case 'b': out += '**' + inner + '**'; break;
+                    case 'em': case 'i': out += '*' + inner + '*'; break;
+                    case 'del': case 's': out += '~~' + inner + '~~'; break;
+                    case 'code': out += '`' + n.textContent + '`'; break;
+                    case 'a': out += '[' + inner + '](' + (n.getAttribute('href') || '') + ')'; break;
+                    case 'br': out += '  \\n'; break;
+                    case 'img': out += '![' + (n.getAttribute('alt') || '') + '](' + (n.getAttribute('src') || '') + ')'; break;
+                    case 'input': break;
+                    default: out += inner;
+                }
+            });
+            return out;
+        }
+        function listToMd(list, ordered, depth) {
+            var out = ''; var idx = 1;
+            var pad = '  '.repeat(depth);
+            list.childNodes.forEach(function(li) {
+                if (li.nodeType !== 1 || li.tagName.toLowerCase() !== 'li') return;
+                var marker = ordered ? (idx++ + '. ') : '- ';
+                var clone = li.cloneNode(true);
+                var nested = '';
+                clone.querySelectorAll('ul,ol').forEach(function(sub) {
+                    nested += '\\n' + listToMd(sub, sub.tagName.toLowerCase() === 'ol', depth + 1);
+                    sub.remove();
+                });
+                var cb = clone.querySelector('input[type=checkbox]');
+                var task = '';
+                if (cb) { task = cb.checked ? '[x] ' : '[ ] '; cb.remove(); }
+                out += pad + marker + task + inlineToMd(clone).trim() + nested + '\\n';
+            });
+            return out.trimEnd();
+        }
+        function tableToMd(table) {
+            var rows = [];
+            table.querySelectorAll('tr').forEach(function(tr) {
+                var cells = [];
+                tr.querySelectorAll('th,td').forEach(function(c) { cells.push(inlineToMd(c).trim()); });
+                rows.push(cells);
+            });
+            if (!rows.length) return '';
+            var hdr = '| ' + rows[0].join(' | ') + ' |';
+            var sep = '| ' + rows[0].map(function() { return '---'; }).join(' | ') + ' |';
+            var body = rows.slice(1).map(function(r) { return '| ' + r.join(' | ') + ' |'; }).join('\\n');
+            return hdr + '\\n' + sep + (body ? '\\n' + body : '');
+        }
+        function nodeToMd(n) {
+            var tag = n.tagName ? n.tagName.toLowerCase() : '';
+            switch (tag) {
+                case 'h1': return '# ' + inlineToMd(n).trim();
+                case 'h2': return '## ' + inlineToMd(n).trim();
+                case 'h3': return '### ' + inlineToMd(n).trim();
+                case 'h4': return '#### ' + inlineToMd(n).trim();
+                case 'h5': return '##### ' + inlineToMd(n).trim();
+                case 'h6': return '###### ' + inlineToMd(n).trim();
+                case 'p': { var t = inlineToMd(n).trim(); return t || null; }
+                case 'hr': return '---';
+                case 'blockquote': {
+                    var inner = [];
+                    n.childNodes.forEach(function(c) { var m = nodeToMd(c); if (m) inner.push(m); });
+                    return inner.join('\\n\\n').split('\\n').map(function(l) { return '> ' + l; }).join('\\n');
+                }
+                case 'ul': return listToMd(n, false, 0);
+                case 'ol': return listToMd(n, true, 0);
+                case 'div': {
+                    if (n.classList.contains('code-wrap')) {
+                        var code = n.querySelector('code');
+                        var lang = '';
+                        if (code) code.classList.forEach(function(c) { if (c.startsWith('language-')) lang = c.slice(9); });
+                        return '```' + lang + '\\n' + (code ? code.textContent : n.textContent).replace(/\\n$/, '') + '\\n```';
+                    }
+                    return null;
+                }
+                case 'table': return tableToMd(n);
+                default: { var txt = inlineToMd(n).trim(); return txt || null; }
+            }
+        }
+        // ── Syntax highlighting ─────────────────────────────────────────────
         (function () {
           const KW = new Set(("func var let const function return if else for while do switch case break " +
             "continue class struct enum protocol extension import from def lambda public private static " +

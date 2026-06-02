@@ -24,8 +24,10 @@ struct MDMagicApp: App {
                     .keyboardShortcut("o", modifiers: .command)
             }
             CommandGroup(replacing: .saveItem) {
-                Button("Save As Markdown…") { store.active?.saveAs() }
+                Button("Save") { store.active?.save() }
                     .keyboardShortcut("s", modifiers: .command)
+                Button("Save As Markdown…") { store.active?.saveAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .importExport) {
                 Button("Export as HTML…") { store.active?.exportHTML() }
@@ -36,6 +38,8 @@ struct MDMagicApp: App {
             CommandGroup(after: .toolbar) {
                 Button("Toggle Dark Mode") { store.appearance.toggle() }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Edit Source") { store.active?.toggleEditMode() }
+                    .keyboardShortcut("e", modifiers: [.command, .option])
                 Button("Reload") { store.active?.reload() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
@@ -164,9 +168,15 @@ final class TabModel: ObservableObject, Identifiable {
     let kind: TabKind
     @Published var title: String = "Untitled"
     @Published var html: String          // HTML loaded into the web view
+    @Published var isEditing: Bool = false // markdown tabs only
     private var markdownSource: String = "" // raw Markdown (viewer tabs)
     private var currentURL: URL?
     weak var webView: WKWebView?
+    private(set) lazy var scriptProxy: ScriptMessageProxy = {
+        let p = ScriptMessageProxy(); p.tab = self; return p
+    }()
+
+    var hasCurrentURL: Bool { currentURL != nil }
     /// Called with the destination URL whenever this tab writes a file to disk,
     /// so the store can record it in recents.
     var onSavedToDisk: ((URL) -> Void)?
@@ -198,7 +208,29 @@ final class TabModel: ObservableObject, Identifiable {
     }
 
     func reload() {
-        if kind == .markdown, let url = currentURL { loadFile(url: url) }
+        if kind == .markdown, let url = currentURL, !isEditing { loadFile(url: url) }
+    }
+
+    func toggleEditMode() {
+        guard kind == .markdown else { return }
+        if isEditing {
+            webView?.evaluateJavaScript("disableEditing()")
+            isEditing = false
+        } else {
+            webView?.evaluateJavaScript("enableEditing()")
+            isEditing = true
+        }
+    }
+
+    func receiveEditSave(markdown: String) {
+        markdownSource = markdown
+        if let url = currentURL { writeToDisk(markdown, to: url) }
+        html = MarkdownRenderer.html(from: markdown)
+        isEditing = false
+    }
+
+    func receiveEditCancel() {
+        isEditing = false
     }
 
     /// The WebView content uses CSS `prefers-color-scheme`, which follows the *system*
@@ -235,9 +267,32 @@ final class TabModel: ObservableObject, Identifiable {
 
     // MARK: Save (Markdown)
 
-    /// Save the current tab as a Markdown (.md) file — the default save format.
-    /// Editor tabs serialize their rich content back to Markdown; viewer tabs use
-    /// their original Markdown source.
+    /// Save in-place if the file has a known URL; show Save As panel otherwise.
+    func save() {
+        switch kind {
+        case .dashboard: return
+        case .editor: saveAs()
+        case .markdown:
+            if isEditing {
+                webView?.evaluateJavaScript("getMarkdown()") { [weak self] result, _ in
+                    guard let self, let md = result as? String else { return }
+                    self.receiveEditSave(markdown: md)
+                }
+            } else if let url = currentURL {
+                writeToDisk(markdownSource, to: url)
+            } else {
+                saveAs()
+            }
+        }
+    }
+
+    private func writeToDisk(_ text: String, to url: URL) {
+        do { try text.write(to: url, atomically: true, encoding: .utf8) }
+        catch { presentError("Could not save: \(error.localizedDescription)") }
+    }
+
+    /// Show Save As panel. Editor tabs serialize rich content to Markdown first;
+    /// markdown tabs use their raw source (extracting from the textarea when in edit mode).
     func saveAs() {
         switch kind {
         case .dashboard:
@@ -248,7 +303,14 @@ final class TabModel: ObservableObject, Identifiable {
                 self?.writeMarkdown((result as? String) ?? "")
             }
         case .markdown:
-            writeMarkdown(markdownSource)
+            if isEditing {
+                webView?.evaluateJavaScript("getMarkdown()") { [weak self] result, _ in
+                    guard let self, let md = result as? String else { return }
+                    self.writeMarkdown(md)
+                }
+            } else {
+                writeMarkdown(markdownSource)
+            }
         }
     }
 
@@ -437,10 +499,14 @@ struct TopNavBar: View {
             }
             .help("Open a Markdown file (⌘O)")
 
-            Button(action: { store.active?.saveAs() }) {
+            Button(action: { store.active?.save() }) {
                 Label("Save", systemImage: "square.and.arrow.down")
             }
-            .help("Save current tab as Markdown (⌘S)")
+            .help("Save current tab (⌘S)")
+
+            if let active = store.active, active.kind == .markdown {
+                EditToggleButton(tab: active)
+            }
 
             Menu {
                 Button("Export as HTML…") { store.active?.exportHTML() }
@@ -478,6 +544,18 @@ struct TopNavBar: View {
         .padding(.vertical, 8)
         .frame(height: 44)
         .background(.bar)
+    }
+}
+
+struct EditToggleButton: View {
+    @ObservedObject var tab: TabModel
+
+    var body: some View {
+        Button(action: { tab.toggleEditMode() }) {
+            Label(tab.isEditing ? "Preview" : "Edit",
+                  systemImage: tab.isEditing ? "eye" : "pencil.line")
+        }
+        .help(tab.isEditing ? "Switch to rendered preview" : "Edit markdown source")
     }
 }
 
@@ -539,11 +617,11 @@ struct TabContentView: View {
             WebView(html: tab.html,
                     editable: tab.kind == .editor,
                     onFileDrop: { url in
-                        // Dropping a file onto a viewer tab loads it in place.
                         if tab.kind == .markdown { tab.loadFile(url: url) }
                     },
                     onCreate: { view in tab.webView = view },
-                    onLoad: { tab.applyAppearance(store.appearance) })
+                    onLoad: { tab.applyAppearance(store.appearance) },
+                    messageProxy: tab.kind == .markdown ? tab.scriptProxy : nil)
                 .ignoresSafeArea()
         }
     }
@@ -660,6 +738,26 @@ struct FileTile: View {
     }
 }
 
+// MARK: - Script message handler (weak proxy to avoid retain cycles)
+
+final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var tab: TabModel?
+    func userContentController(_ c: WKUserContentController, didReceive msg: WKScriptMessage) {
+        guard let body = msg.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let tab = self?.tab else { return }
+            switch action {
+            case "save":
+                tab.receiveEditSave(markdown: (body["content"] as? String) ?? "")
+            case "cancel":
+                tab.receiveEditCancel()
+            default: break
+            }
+        }
+    }
+}
+
 // MARK: - WKWebView wrapper
 
 final class DroppableWebView: WKWebView {
@@ -707,9 +805,14 @@ struct WebView: NSViewRepresentable {
     let onFileDrop: (URL) -> Void
     let onCreate: (DroppableWebView) -> Void
     let onLoad: () -> Void
+    var messageProxy: ScriptMessageProxy?
 
     func makeNSView(context: Context) -> DroppableWebView {
-        let view = DroppableWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let config = WKWebViewConfiguration()
+        if let proxy = messageProxy {
+            config.userContentController.add(proxy, name: "mdmagic")
+        }
+        let view = DroppableWebView(frame: .zero, configuration: config)
         view.setValue(false, forKey: "drawsBackground")
         view.onFileDrop = onFileDrop
         view.navigationDelegate = context.coordinator
