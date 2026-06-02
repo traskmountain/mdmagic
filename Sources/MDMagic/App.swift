@@ -95,6 +95,12 @@ final class TabStore: ObservableObject {
             tabs.forEach { $0.applyAppearance(appearance) }
         }
     }
+    @Published var viewFontColor: Color? {
+        didSet { saveColorPref("viewFontColor", viewFontColor); tabs.forEach { $0.applyColorOverrides(viewFontColor, viewBgColor) } }
+    }
+    @Published var viewBgColor: Color? {
+        didSet { saveColorPref("viewBgColor", viewBgColor); tabs.forEach { $0.applyColorOverrides(viewFontColor, viewBgColor) } }
+    }
     let recents = Recents()
 
     var active: TabModel? { tabs.first { $0.id == activeID } }
@@ -110,6 +116,29 @@ final class TabStore: ObservableObject {
            let saved = Appearance(rawValue: raw) {
             appearance = saved
         }
+        viewFontColor = loadColorPref("viewFontColor")
+        viewBgColor   = loadColorPref("viewBgColor")
+    }
+
+    // MARK: - Color prefs helpers
+
+    private func saveColorPref(_ key: String, _ color: Color?) {
+        if let color {
+            let ns = NSColor(color)
+            if let data = try? NSKeyedArchiver.archivedData(withRootObject: ns, requiringSecureCoding: false) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        UserDefaults.standard.synchronize()
+    }
+
+    private func loadColorPref(_ key: String) -> Color? {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let ns = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: data)
+        else { return nil }
+        return Color(ns)
     }
 
     /// Opens (or re-focuses) the dashboard tab.
@@ -287,6 +316,39 @@ final class TabModel: ObservableObject, Identifiable {
         }
         webView?.evaluateJavaScript(
             js + "document.documentElement.style.setProperty('color-scheme','\(scheme)');")
+    }
+
+    /// Injects (or clears) custom --fg / --bg overrides on #article.
+    /// Pass nil for a color to remove its override and fall back to the theme default.
+    func applyColorOverrides(_ fontColor: Color?, _ bgColor: Color?) {
+        guard kind == .markdown else { return }
+        let fgCSS = fontColor.map { cssHex($0) }
+        let bgCSS = bgColor.map { cssHex($0) }
+
+        var js = ""
+        if let fg = fgCSS {
+            js += "document.getElementById('article')?.style.setProperty('--fg','\(fg)');"
+            js += "document.getElementById('article')?.style.setProperty('color','\(fg)');"
+        } else {
+            js += "document.getElementById('article')?.style.removeProperty('--fg');"
+            js += "document.getElementById('article')?.style.removeProperty('color');"
+        }
+        if let bg = bgCSS {
+            js += "document.body.style.setProperty('--bg','\(bg)');"
+            js += "document.body.style.setProperty('background','\(bg)');"
+        } else {
+            js += "document.body.style.removeProperty('--bg');"
+            js += "document.body.style.removeProperty('background');"
+        }
+        webView?.evaluateJavaScript(js)
+    }
+
+    private func cssHex(_ color: Color) -> String {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
+        let r = Int(min(max(ns.redComponent,   0), 1) * 255)
+        let g = Int(min(max(ns.greenComponent, 0), 1) * 255)
+        let b = Int(min(max(ns.blueComponent,  0), 1) * 255)
+        return String(format: "#%02x%02x%02x", r, g, b)
     }
 
     // MARK: Zoom
@@ -541,6 +603,7 @@ struct TopNavBar: View {
 
             if let active = store.active, active.kind == .markdown {
                 EditToggleButton(tab: active)
+                ViewColorControls(store: store)
             }
 
             Menu {
@@ -591,6 +654,52 @@ struct EditToggleButton: View {
                   systemImage: tab.isEditing ? "eye" : "pencil.line")
         }
         .help(tab.isEditing ? "Switch to rendered preview" : "Edit markdown source")
+    }
+}
+
+/// Font-color and background-color pickers shown in the toolbar for Markdown viewer tabs.
+struct ViewColorControls: View {
+    @ObservedObject var store: TabStore
+
+    // Bindings that map Color? <-> Color, using a sensible default for display.
+    private var fontColorBinding: Binding<Color> {
+        Binding(
+            get: { store.viewFontColor ?? .primary },
+            set: { store.viewFontColor = $0 }
+        )
+    }
+    private var bgColorBinding: Binding<Color> {
+        Binding(
+            get: { store.viewBgColor ?? Color(NSColor.windowBackgroundColor) },
+            set: { store.viewBgColor = $0 }
+        )
+    }
+
+    private var hasOverrides: Bool { store.viewFontColor != nil || store.viewBgColor != nil }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ColorPicker("", selection: fontColorBinding, supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 28, height: 22)
+                .help("Text color override")
+
+            ColorPicker("", selection: bgColorBinding, supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 28, height: 22)
+                .help("Background color override")
+
+            if hasOverrides {
+                Button(action: {
+                    store.viewFontColor = nil
+                    store.viewBgColor   = nil
+                }) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 11))
+                }
+                .help("Reset text and background colors to theme default")
+            }
+        }
     }
 }
 
@@ -655,7 +764,10 @@ struct TabContentView: View {
                         if tab.kind == .markdown { tab.loadFile(url: url) }
                     },
                     onCreate: { view in tab.webView = view },
-                    onLoad: { tab.applyAppearance(store.appearance) },
+                    onLoad: {
+                        tab.applyAppearance(store.appearance)
+                        tab.applyColorOverrides(store.viewFontColor, store.viewBgColor)
+                    },
                     messageProxy: tab.kind == .markdown ? tab.scriptProxy : nil)
                 .ignoresSafeArea()
         }
