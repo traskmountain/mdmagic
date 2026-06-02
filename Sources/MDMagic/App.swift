@@ -175,6 +175,7 @@ final class TabModel: ObservableObject, Identifiable {
     private(set) lazy var scriptProxy: ScriptMessageProxy = {
         let p = ScriptMessageProxy(); p.tab = self; return p
     }()
+    private var autoSaveTimer: Timer?
 
     var hasCurrentURL: Bool { currentURL != nil }
     /// Called with the destination URL whenever this tab writes a file to disk,
@@ -214,15 +215,18 @@ final class TabModel: ObservableObject, Identifiable {
     func toggleEditMode() {
         guard kind == .markdown else { return }
         if isEditing {
+            stopAutoSave()
             webView?.evaluateJavaScript("disableEditing()")
             isEditing = false
         } else {
             webView?.evaluateJavaScript("enableEditing()")
             isEditing = true
+            startAutoSave()
         }
     }
 
     func receiveEditSave(markdown: String) {
+        stopAutoSave()
         markdownSource = markdown
         if let url = currentURL { writeToDisk(markdown, to: url) }
         html = MarkdownRenderer.html(from: markdown)
@@ -230,7 +234,29 @@ final class TabModel: ObservableObject, Identifiable {
     }
 
     func receiveEditCancel() {
+        stopAutoSave()
         isEditing = false
+    }
+
+    private func startAutoSave() {
+        autoSaveTimer?.invalidate()
+        autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.performAutoSave()
+        }
+    }
+
+    private func stopAutoSave() {
+        autoSaveTimer?.invalidate()
+        autoSaveTimer = nil
+    }
+
+    private func performAutoSave() {
+        guard isEditing, let url = currentURL else { return }
+        webView?.evaluateJavaScript("getMarkdown()") { [weak self] result, _ in
+            guard let self, let md = result as? String else { return }
+            self.markdownSource = md
+            self.writeToDisk(md, to: url)
+        }
     }
 
     /// The WebView content uses CSS `prefers-color-scheme`, which follows the *system*

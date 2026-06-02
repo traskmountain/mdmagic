@@ -163,6 +163,7 @@ extension MarkdownRenderer {
                 var t = el.tagName.toLowerCase();
                 if (t !== 'hr' && t !== 'script') {
                     el.setAttribute('contenteditable', 'true');
+                    el.setAttribute('spellcheck', 'true');
                     el.setAttribute('data-editable', '1');
                 }
             });
@@ -173,6 +174,7 @@ extension MarkdownRenderer {
             document.body.classList.remove('editing');
             document.querySelectorAll('[data-editable]').forEach(function(el) {
                 el.removeAttribute('contenteditable');
+                el.removeAttribute('spellcheck');
                 el.removeAttribute('data-editable');
             });
         }
