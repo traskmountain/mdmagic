@@ -121,7 +121,7 @@ extension MarkdownRenderer {
         #edit-toolbar .btn-save:hover { background: #0550ae; }
         #edit-toolbar .btn-cancel { color: var(--muted); }
         #article { outline: none; }
-        body.editing #article { cursor: text; }
+        body.editing #article { cursor: text; padding-top: 12px; }
         body.editing #article > *:hover { outline: 1px dashed var(--link); outline-offset: 3px; border-radius: 3px; }
         body.editing #article > *:focus { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 3px; }
         </style>

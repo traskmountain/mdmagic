@@ -88,12 +88,10 @@ enum Appearance: String {
 final class TabStore: ObservableObject {
     @Published var tabs: [TabModel] = []
     @Published var activeID: UUID?
-    @Published var appearance: Appearance = {
-        let raw = UserDefaults.standard.string(forKey: "appearance") ?? ""
-        return Appearance(rawValue: raw) ?? .system
-    }() {
+    @Published var appearance: Appearance = .system {
         didSet {
             UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
+            UserDefaults.standard.synchronize()
             tabs.forEach { $0.applyAppearance(appearance) }
         }
     }
@@ -107,6 +105,11 @@ final class TabStore: ObservableObject {
         dash.title = "Dashboard"
         tabs = [dash]
         activeID = dash.id
+        // Load persisted appearance after full init so didSet fires normally
+        if let raw = UserDefaults.standard.string(forKey: "appearance"),
+           let saved = Appearance(rawValue: raw) {
+            appearance = saved
+        }
     }
 
     /// Opens (or re-focuses) the dashboard tab.
