@@ -171,7 +171,8 @@ extension MarkdownRenderer {
             art.setAttribute('contenteditable', 'true');
             art.setAttribute('spellcheck', 'true');
             document.execCommand('styleWithCSS', false, true);
-            art.focus();
+            // Defer focus so it doesn't race with the WKWebView first-responder handoff.
+            setTimeout(function() { art.focus(); }, 0);
         }
         function disableEditing() {
             var art = document.getElementById('article');

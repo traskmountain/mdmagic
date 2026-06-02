@@ -264,12 +264,6 @@ final class TabModel: ObservableObject, Identifiable {
             isEditing = false
         } else {
             webView?.evaluateJavaScript("enableEditing()")
-            // Give the WKWebView keyboard first-responder status so the
-            // contenteditable article actually receives keystrokes after the
-            // toolbar button click moved focus away from the web view.
-            if let wv = webView {
-                wv.window?.makeFirstResponder(wv)
-            }
             isEditing = true
             startAutoSave()
         }
