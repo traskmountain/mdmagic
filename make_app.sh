@@ -3,10 +3,16 @@
 set -e
 cd "$(dirname "$0")"
 
-swift build -c release
+# Pass --universal to build a fat arm64 + x86_64 binary (used for releases).
+if [ "$1" = "--universal" ]; then
+    swift build -c release --arch arm64 --arch x86_64
+    BIN=".build/apple/Products/Release/MDMagic"
+else
+    swift build -c release
+    BIN=".build/release/MDMagic"
+fi
 
 APP="MDMagic.app"
-BIN=".build/release/MDMagic"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
