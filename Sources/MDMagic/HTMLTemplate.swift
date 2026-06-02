@@ -202,11 +202,19 @@ extension MarkdownRenderer {
         function articleToMarkdown() {
             var art = document.getElementById('article');
             var out = [];
-            art.childNodes.forEach(function(n) {
-                if (n.nodeType !== 1) return;
-                var md = nodeToMd(n);
-                if (md !== null) out.push(md);
-            });
+            function collect(node) {
+                node.childNodes.forEach(function(n) {
+                    if (n.nodeType === 3) {
+                        var t = n.textContent.trim();
+                        if (t) out.push(t);
+                        return;
+                    }
+                    if (n.nodeType !== 1) return;
+                    var md = nodeToMd(n);
+                    if (md !== null) out.push(md);
+                });
+            }
+            collect(art);
             return out.join('\\n\\n').trim() + '\\n';
         }
         function inlineToMd(node) {
@@ -216,7 +224,7 @@ extension MarkdownRenderer {
                 if (n.nodeType !== 1) return;
                 var tag = n.tagName.toLowerCase();
                 var inner = inlineToMd(n);
-                if (tag === 'span') { out += n.textContent; return; } // strip highlight spans
+                if (tag === 'span') { out += n.textContent; return; }
                 switch (tag) {
                     case 'strong': case 'b': out += '**' + inner + '**'; break;
                     case 'em': case 'i': out += '*' + inner + '*'; break;
@@ -226,8 +234,21 @@ extension MarkdownRenderer {
                     case 'br': out += '  \\n'; break;
                     case 'img': out += '![' + (n.getAttribute('alt') || '') + '](' + (n.getAttribute('src') || '') + ')'; break;
                     case 'input': break;
-                    // block elements that can appear inline in contenteditable output
-                    case 'div': case 'p': out += inner + (out.length ? '\\n' : ''); break;
+                    // block wrappers contenteditable inserts
+                    case 'div': case 'p':
+                        if (out && !out.endsWith('\\n')) out += '\\n';
+                        out += inner;
+                        break;
+                    // list inside inline context (shouldn't happen, but be defensive)
+                    case 'ul': case 'ol': {
+                        var ord = tag === 'ol'; var li_i = 1;
+                        n.querySelectorAll('li').forEach(function(li) {
+                            var m = ord ? (li_i++ + '. ') : '- ';
+                            if (out && !out.endsWith('\\n')) out += '\\n';
+                            out += m + inlineToMd(li).trim();
+                        });
+                        break;
+                    }
                     default: out += inner;
                 }
             });
@@ -277,9 +298,13 @@ extension MarkdownRenderer {
                 case 'p': { var t = inlineToMd(n).trim(); return t || null; }
                 case 'hr': return '---';
                 case 'blockquote': {
-                    var inner = [];
-                    n.childNodes.forEach(function(c) { var m = nodeToMd(c); if (m) inner.push(m); });
-                    return inner.join('\\n\\n').split('\\n').map(function(l) { return '> ' + l; }).join('\\n');
+                    var bqParts = [];
+                    n.childNodes.forEach(function(c) {
+                        if (c.nodeType === 3) { var t = c.textContent.trim(); if (t) bqParts.push(t); return; }
+                        if (c.nodeType !== 1) return;
+                        var m = nodeToMd(c); if (m) bqParts.push(m);
+                    });
+                    return bqParts.join('\\n\\n').split('\\n').map(function(l) { return '> ' + l; }).join('\\n');
                 }
                 case 'ul': return listToMd(n, false, 0);
                 case 'ol': return listToMd(n, true, 0);
@@ -290,7 +315,14 @@ extension MarkdownRenderer {
                         if (code) code.classList.forEach(function(c) { if (c.startsWith('language-')) lang = c.slice(9); });
                         return '```' + lang + '\\n' + (code ? code.textContent : n.textContent).replace(/\\n$/, '') + '\\n```';
                     }
-                    return null;
+                    // Generic wrapper div (WebKit creates these during editing) — recurse
+                    var divParts = [];
+                    n.childNodes.forEach(function(c) {
+                        if (c.nodeType === 3) { var t = c.textContent.trim(); if (t) divParts.push(t); return; }
+                        if (c.nodeType !== 1) return;
+                        var m = nodeToMd(c); if (m !== null) divParts.push(m);
+                    });
+                    return divParts.length ? divParts.join('\\n\\n') : null;
                 }
                 case 'table': return tableToMd(n);
                 default: { var txt = inlineToMd(n).trim(); return txt || null; }
