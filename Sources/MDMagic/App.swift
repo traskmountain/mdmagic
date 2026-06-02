@@ -88,8 +88,14 @@ enum Appearance: String {
 final class TabStore: ObservableObject {
     @Published var tabs: [TabModel] = []
     @Published var activeID: UUID?
-    @Published var appearance: Appearance = .system {
-        didSet { tabs.forEach { $0.applyAppearance(appearance) } }
+    @Published var appearance: Appearance = {
+        let raw = UserDefaults.standard.string(forKey: "appearance") ?? ""
+        return Appearance(rawValue: raw) ?? .system
+    }() {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
+            tabs.forEach { $0.applyAppearance(appearance) }
+        }
     }
     let recents = Recents()
 
