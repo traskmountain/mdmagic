@@ -8,6 +8,8 @@ A **lightweight**, native macOS Markdown viewer that renders `.md` files in rich
 - **Syntax-highlighted code blocks** — keywords, strings, numbers, comments, function names
 - **Automatic light / dark mode** — follows the system appearance
 - **Drag & drop** a `.md` file onto the window, press **⌘O** to open, or double-click `.md` files in Finder
+- **Export to PDF** — **⌘E** (or the toolbar share button); always exports with light styling for clean printing
+- **Zoom** — **⌘+** / **⌘-** to zoom in/out, **⌘0** for actual size
 - **⌘R** reloads the current file
 - Single ~187 KB native executable
 
