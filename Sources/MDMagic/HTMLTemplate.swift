@@ -19,7 +19,7 @@ extension MarkdownRenderer {
             --kw:#cf222e; --str:#0a3069; --num:#0550ae; --com:#59636e; --fn:#8250df;
         }
         @media (prefers-color-scheme: dark) {
-            :root {
+            :root:not([data-theme="light"]) {
                 --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e;
                 --border: #30363d; --link: #4493f8;
                 --code-bg: #161b22; --code-fg: #e6edf3;
@@ -27,6 +27,15 @@ extension MarkdownRenderer {
                 --th-bg: #161b22; --hr: #30363d;
                 --kw:#ff7b72; --str:#a5d6ff; --num:#79c0ff; --com:#8b949e; --fn:#d2a8ff;
             }
+        }
+        /* Explicit in-app override (set via data-theme) */
+        :root[data-theme="dark"] {
+            --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e;
+            --border: #30363d; --link: #4493f8;
+            --code-bg: #161b22; --code-fg: #e6edf3;
+            --quote-border: #3d444d; --quote-fg: #9198a1;
+            --th-bg: #161b22; --hr: #30363d;
+            --kw:#ff7b72; --str:#a5d6ff; --num:#79c0ff; --com:#8b949e; --fn:#d2a8ff;
         }
         * { box-sizing: border-box; }
         body {
