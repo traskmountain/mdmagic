@@ -145,7 +145,14 @@ extension MarkdownRenderer {
             <button title="Outdent" onclick="fmt('outdent')">⇤</button>
             <button title="Indent" onclick="fmt('indent')">⇥</button>
             <span class="sep"></span>
-            <button title="Insert link" onclick="addLink()">🔗 Link</button>
+            <button title="Insert link" onclick="addLink()" id="btn-link">🔗 Link</button>
+            <span id="link-row" style="display:none;align-items:center;gap:4px;">
+                <input id="link-url" type="url" placeholder="https://" autocomplete="off" spellcheck="false"
+                       style="font-size:13px;height:26px;padding:0 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);width:180px;"
+                       onkeydown="if(event.key==='Enter'){event.preventDefault();confirmLink();}else if(event.key==='Escape'){cancelLink();}">
+                <button onclick="confirmLink()" title="Apply link" style="padding:4px 8px;">→</button>
+                <button onclick="cancelLink()" title="Cancel" style="padding:4px 8px;">✕</button>
+            </span>
             <span class="sep"></span>
             <button class="btn-save" onclick="saveEdit()">💾 Save</button>
             <button class="btn-cancel" onclick="cancelEdit()">✕ Cancel</button>
@@ -193,9 +200,35 @@ extension MarkdownRenderer {
             var r = sel.getRangeAt(0), code = document.createElement('code');
             r.surroundContents(code);
         }
+        var _savedRange = null;
         function addLink() {
-            var url = prompt('URL:', 'https://');
-            if (url) document.execCommand('createLink', false, url);
+            var sel = window.getSelection();
+            _savedRange = (sel && sel.rangeCount) ? sel.getRangeAt(0).cloneRange() : null;
+            document.getElementById('btn-link').style.display = 'none';
+            var row = document.getElementById('link-row');
+            row.style.display = 'inline-flex';
+            var input = document.getElementById('link-url');
+            input.value = '';
+            input.focus();
+        }
+        function confirmLink() {
+            var url = document.getElementById('link-url').value.trim();
+            if (url) {
+                if (_savedRange) {
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(_savedRange);
+                }
+                document.execCommand('createLink', false, url);
+            }
+            cancelLink();
+        }
+        function cancelLink() {
+            document.getElementById('link-row').style.display = 'none';
+            document.getElementById('btn-link').style.display = '';
+            document.getElementById('link-url').value = '';
+            _savedRange = null;
+            document.getElementById('article').focus();
         }
 
         // ── Markdown serialiser (rendered HTML → Markdown) ──────────────────

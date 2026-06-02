@@ -284,7 +284,7 @@ final class TabModel: ObservableObject, Identifiable {
 
     private func startAutoSave() {
         autoSaveTimer?.invalidate()
-        autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             self?.performAutoSave()
         }
     }
@@ -371,6 +371,7 @@ final class TabModel: ObservableObject, Identifiable {
     // MARK: Save (Markdown)
 
     /// Save in-place if the file has a known URL; show Save As panel otherwise.
+    /// While editing, saves to disk but stays in edit mode (no reload, no interruption).
     func save() {
         switch kind {
         case .dashboard: return
@@ -379,7 +380,12 @@ final class TabModel: ObservableObject, Identifiable {
             if isEditing {
                 webView?.evaluateJavaScript("getMarkdown()") { [weak self] result, _ in
                     guard let self, let md = result as? String else { return }
-                    self.receiveEditSave(markdown: md)
+                    self.markdownSource = md
+                    if let url = self.currentURL {
+                        self.writeToDisk(md, to: url)
+                    } else {
+                        DispatchQueue.main.async { self.writeMarkdown(md) }
+                    }
                 }
             } else if let url = currentURL {
                 writeToDisk(markdownSource, to: url)
